@@ -1,0 +1,137 @@
+#include <Arduino.h>
+#include <LittleFS.h>
+#include <esp_sleep.h>
+#include <WiFi.h>
+
+class SimulatedQMI8658 {
+private:
+    bool motionDetected;
+    void (*wakeupCallback)();
+
+public:
+    SimulatedQMI8658() : motionDetected(false), wakeupCallback(nullptr) {}
+
+    bool begin() {
+        Serial.println("Initializing simulated accelerometer...");
+        return true; // Simulation initialization
+    }
+
+    bool readFromFifo(IMUdata* acc, int accCount, IMUdata* gyr, int gyrCount) {
+        for (int i = 0; i < accCount; i++) {
+            acc[i].x = random(-32768, 32767) / 1000.0;
+            acc[i].y = random(-32768, 32767) / 1000.0;
+            acc[i].z = random(-32768, 32767) / 1000.0;
+        }
+        for (int i = 0; i < gyrCount; i++) {
+            gyr[i].x = random(-32768, 32767) / 100.0;
+            gyr[i].y = random(-32768, 32767) / 100.0;
+            gyr[i].z = random(-32768, 32767) / 100.0;
+        }
+        return true;
+    }
+
+    void configWakeOnMotion() {
+        Serial.println("Configuring wake-on-motion...");
+    }
+
+    void setWakeupMotionEventCallBack(void (*callback)()) {
+        wakeupCallback = callback;
+    }
+
+    void simulateMotion() {
+        if (random(100) < 5 && !motionDetected) {
+            motionDetected = true;
+            if (wakeupCallback) wakeupCallback();
+        } else {
+            motionDetected = false;
+        }
+    }
+};
+
+// Callback function
+void onMotionDetected() {
+    Serial.println("Motion detected, waking up ESP32...");
+}
+
+// TimeManager handles synchronization and RTC-based timekeeping
+class TimeManager {
+public:
+    void begin() {
+        configTime(0, 0, "pool.ntp.org");
+        Serial.println("Time manager initialized. Syncing time...");
+    }
+
+    time_t getCurrentTime() {
+        return time(nullptr);
+    }
+
+    void synchronizeTime() {
+        if (WiFi.isConnected()) {
+            configTime(0, 0, "pool.ntp.org");
+            Serial.println("Time synchronized via NTP.");
+        }
+    }
+};
+
+// LittleFS file management for activity data
+void setupFileSystem() {
+    if (!LittleFS.begin()) {
+        Serial.println("Failed to mount LittleFS. Check file system setup.");
+    } else {
+        Serial.println("LittleFS mounted successfully.");
+    }
+}
+
+void logActivityData(time_t timestamp, uint16_t activityDurations[4]) {
+    char filename[20];
+    strftime(filename, sizeof(filename), "/data/%Y%m%d.dat", localtime(&timestamp));
+    File file = LittleFS.open(filename, FILE_APPEND);
+
+    if (file) {
+        file.write((uint8_t*)&timestamp, sizeof(timestamp));
+        for (int i = 0; i < 4; i++) {
+            file.write((uint8_t*)&activityDurations[i], sizeof(activityDurations[i]));
+        }
+        file.close();
+        Serial.println("Activity data logged.");
+    } else {
+        Serial.println("Failed to open file for logging activity data.");
+    }
+}
+
+void enterDeepSleep() {
+    esp_sleep_enable_timer_wakeup(2 * 60 * 1000000); // 2 minutes
+    Serial.println("Entering deep sleep mode...");
+    esp_light_sleep_start();
+}
+
+void setup() {
+    Serial.begin(115200);
+
+    // Initialize accelerometer simulation
+    SimulatedQMI8658 accelerometer;
+    accelerometer.begin();
+    accelerometer.setWakeupMotionEventCallBack(onMotionDetected);
+
+    // Initialize time management and synchronize time
+    TimeManager timeManager;
+    timeManager.begin();
+
+    // Setup filesystem for data storage
+    setupFileSystem();
+
+    // Enter initial deep sleep
+    enterDeepSleep();
+}
+
+void loop() {
+    static SimulatedQMI8658 accelerometer;
+    accelerometer.simulateMotion();
+
+    // Log current activity data every loop
+    time_t currentTime = time(nullptr);
+    uint16_t activityDurations[4] = {30, 120, 45, 60}; // Example durations
+    logActivityData(currentTime, activityDurations);
+
+    delay(1000); // 1-second delay for simulation purposes
+}
